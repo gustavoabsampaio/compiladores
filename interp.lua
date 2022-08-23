@@ -10,11 +10,23 @@ local function foldBin (lst)
   return res
 end
 
+-- local function foldUn (lst)
+--   res = {tag = "unop", op = lst[1], el = lst[2]}
+--   return res
+-- end
+-- 1) Adicione operadores de comparação a linguagem.
+
+-- 2) Adicione um operador de exponenciação, com associatividade à direita.
+
+-- 3) Adicione um operador de menos unário.
+
 local space = lpeg.S(" \t\n")^0
 
 local opM = lpeg.C(lpeg.S("*/")) * space
 local opA = lpeg.C(lpeg.S("+-")) * space
-
+local opC = lpeg.C(lpeg.S("><~=")) * space
+local opM = lpeg.C(lpeg.S("")) * space
+-- local unNEG = lpeg.C(lpeg.S("-")) * space
 local OP = "(" * space
 local CP = ")" * space
 
@@ -22,17 +34,20 @@ local numeral = (lpeg.C(lpeg.R("09")^1) / tonumber * space) /
                   function (n) return {tag = "number", val = n} end
 
 
+-- local unop = lpeg.V("unop")
 local primary = lpeg.V("primary")
 local prod = lpeg.V("prod")
 local sum = lpeg.V("sum")
 
 local grammar = lpeg.P{"sum",
 
+  -- unop = lpeg.Ct(unNEG * primary) / foldUn,
+
   primary = numeral + OP * sum * CP,
 
   prod = lpeg.Ct(primary * (opM * primary)^0) / foldBin,
 
-  sum = lpeg.Ct(prod * (opA * prod)^0) / foldBin
+  sum = lpeg.Ct(prod * ((opA + opC) * prod)^0) / foldBin
 
 }
 
@@ -48,7 +63,10 @@ end
 
 
 local opcode = {["+"] = "add", ["-"] = "sub",
-                ["*"] = "mul", ["/"] = "div"}
+                ["*"] = "mul", ["/"] = "div",
+                ["<"] = "cmpl", ["<="] = "cmple",
+                [">"] = "cmpg", [">="] = "cmpge",
+                ["=="] = "cmpe", ["!="] = "cmpne",}
 
 function Compiler:codeExp (ast)
   local tag = ast.tag
@@ -59,6 +77,9 @@ function Compiler:codeExp (ast)
     self:codeExp(ast.e1)
     self:codeExp(ast.e2)
     self:addCode(opcode[ast.op])
+  -- elseif tag == "unop" then
+  --   self:codeExp(ast.el)
+  --   self:addCode(opcode[ast.op])
   else error("unknown tag " .. tag)
   end
 end
@@ -99,6 +120,24 @@ local function run (code, stack)
       top = top - 1
     elseif op == "div" then
       stack[top - 1] = stack[top - 1] / stack[top]
+      top = top - 1
+    elseif op == "cmpg" then
+      stack[top - 1] = stack[top - 1] > stack[top]
+      top = top - 1
+    elseif op == "cmpge" then
+      stack[top - 1] = stack[top - 1] >= stack[top]
+      top = top - 1
+    elseif op == "cmpl" then
+      stack[top - 1] = stack[top - 1] < stack[top]
+      top = top - 1
+    elseif op == "cmple" then
+      stack[top - 1] = stack[top - 1] <= stack[top]
+      top = top - 1
+    elseif op == "cmpe" then
+      stack[top - 1] = stack[top - 1] == stack[top]
+      top = top - 1
+    elseif op == "cmne" then
+      stack[top - 1] = stack[top - 1] ~= stack[top]
       top = top - 1
     else error("unknown instruction " .. op)
     end
