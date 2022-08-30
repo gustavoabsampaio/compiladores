@@ -30,7 +30,7 @@ end
 
 local comment = "#" * (lpeg.P(1) - "\n")^0
 
-local multicomment = lpeg.P("#[") * (lpeg.P(1))^0 - lpeg.P("]#")
+local multicomment = lpeg.P("#[") * ((lpeg.P(1)- lpeg.P("]#"))^0 * lpeg.P("]#")) 
 
 local ID = lpeg.C(alpha * alphanum^0) * space
 
