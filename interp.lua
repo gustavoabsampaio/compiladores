@@ -30,6 +30,8 @@ end
 
 local comment = "#" * (lpeg.P(1) - "\n")^0
 
+local multicomment = lpeg.P("#[") * (lpeg.P(1))^0 - lpeg.P("]#")
+
 local ID = lpeg.C(alpha * alphanum^0) * space
 
 local numeral = lpeg.C(digit^1) / tonumber * space
@@ -58,7 +60,7 @@ local grammar = lpeg.P{"prog",
              / function (var, exp) return {tag = "assg", var = var, exp = exp} end,
 
   primary = numeral / function (n) return {tag = "number", val = n} end
-          + T"(" * exp * T")"
+          + T"(" * exp * T")" + T"{" * primary * "}"
 	  + ID / function (id) return {tag = "var", id = id} end,
 
   power = T"-" * power / function (e) return {tag = "neg", e = e} end
@@ -72,7 +74,7 @@ local grammar = lpeg.P{"prog",
 
   comparison = lpeg.Ct(sum * (opC * sum)^-1) / foldBin,
 
-  space = (lpeg.S(" \t\n") + comment)^0
+  space = (lpeg.S(" \t\n") + multicomment + comment)^0
 }
 
 

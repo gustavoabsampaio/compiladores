@@ -1,0 +1,6 @@
+val = 1 + 1;
+#[val = val + 2;]#
+val = val + 3;
+{ test = 3}
+val = val + 1;
+return val;
