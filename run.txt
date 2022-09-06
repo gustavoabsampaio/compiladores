@@ -1,6 +1,6 @@
 val = 1 + 1;
 val = val + 2;
-#[if (val == 4) {
+if (val == 3) {
     val = 1;
-}]#
+}
 return val;

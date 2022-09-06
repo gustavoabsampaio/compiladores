@@ -59,6 +59,9 @@ end
 
 local comment = "#" * (lpeg.P(1) - "\n")^0
 
+local multicomment = lpeg.P("#[") * ((lpeg.P(1)- lpeg.P("]#"))^0 * lpeg.P("]#")) 
+
+
 local function checkID (_, _, id)
   return not reserved[id], id
 end
@@ -76,6 +79,8 @@ local comparison = lpeg.V("comparison")
 local stat = lpeg.V("stat")
 local stats = lpeg.V("stats")
 local block = lpeg.V("block")
+local ifTail = lpeg.V("ifTail")
+
 
 local exp = comparison
 
@@ -88,10 +93,14 @@ local grammar = lpeg.P{"prog",
   block = T'{' * stats * T '}',
 
   stat = T";"
-       + Rw"if" * exp * block * (Rw"else" * block)^-1
-              / node("if", "cond", "th", "el")
+       + Rw"if" * exp * block * ifTail
+              / node("if", "cond", "th", "tail")
        + Rw"return" * exp * T";" / node("return", "e")
        + ID * T"=" * exp * T";" / node("assg", "var", "exp"),
+
+  ifTail = Rw"elseif" * exp * block * ifTail / node("elseif", "cond", "th", "tail")
+         + Rw"else" * block / node("else", "el") 
+         + "",
 
   primary = numeral / node("number", "val")
           + T"(" * exp * T")"
@@ -160,12 +169,12 @@ function Compiler:codeStat (ast)
     self:codeExp(ast.cond)
     local jmp = self:addCode("IfZJmp", 0)
     self:codeStat(ast.th)
-    if not ast.el then
+    if not ast.tail then
       self:fixjmp2here(jmp)
     else
       local jmp1 = self:addCode("jmp", 0)
       self:fixjmp2here(jmp)
-      self:codeStat(ast.el)
+      self:codeStat(ast.ifTail)
       self:fixjmp2here(jmp1)
     end
   elseif tag == "assg" then
