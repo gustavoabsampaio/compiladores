@@ -2,37 +2,68 @@ local lpeg = require "lpeg"
 
 local pt = require "pt"
 
-local function foldBin (lst)
-  local res = lst[1]
-  for i = 2, #lst, 2 do
-    res = {tag = "binop", op = lst[i], e1 = res, e2 = lst[i + 1]}
-  end
-  return res
+-----------------------------------------------------------
+local function I (msg)
+  return lpeg.P(function () print(msg); return true end)
 end
 
-local space = lpeg.V("space")
+-----------------------------------------------------------
 
-local opM = lpeg.C(lpeg.S("*/")) * space
-local opA = lpeg.C(lpeg.S("+-")) * space
-local opC = lpeg.C(lpeg.P(">=") + "<=" + "==" + "<>" + lpeg.S("<>")) * space
+local parser
+
+do
+
+local function node (tag, ...)
+  local labels = {...}
+  return function (...)
+    local values = {...}
+    local t = {tag = tag}
+    for i = 1, #labels do
+      t[labels[i]] = values[i]
+    end
+    return t
+  end
+end
+
+
+local function binOpL (term, op)
+  return lpeg.Cf(term * lpeg.Cg(op * term)^0,
+                   node("binop", "e1", "op", "e2"))
+end
+
 
 local alpha = lpeg.R("az", "AZ", "__")
 local digit = lpeg.R("09")
 local alphanum = alpha + digit
 
+local space = lpeg.V("space")
+
+local opM = lpeg.C(lpeg.S("*/")) * space
+local opA = lpeg.C(lpeg.S("+-")) * space
+local opC = lpeg.C(lpeg.P(">=") + "<=" + "==" + "<>") * space
+
+local maxpos = 0
+
+-- create a token
 local function T (t)
   return t * space
 end
 
+local reserved = {}
+
+-- create a reserved word
 local function Rw (w)
+  reserved[w] = true
   return w * -alphanum * space
 end
 
 local comment = "#" * (lpeg.P(1) - "\n")^0
 
-local multicomment = lpeg.P("#[") * ((lpeg.P(1)- lpeg.P("]#"))^0 * lpeg.P("]#")) 
+local function checkID (_, _, id)
+  return not reserved[id], id
+end
 
-local ID = lpeg.C(alpha * alphanum^0) * space
+local ID = lpeg.Cmt(lpeg.C(alpha * alphanum^0), checkID) * space
 
 local numeral = lpeg.C(digit^1) / tonumber * space
 
@@ -44,6 +75,7 @@ local sum = lpeg.V("sum")
 local comparison = lpeg.V("comparison")
 local stat = lpeg.V("stat")
 local stats = lpeg.V("stats")
+local block = lpeg.V("block")
 
 local exp = comparison
 
@@ -51,33 +83,47 @@ local grammar = lpeg.P{"prog",
 
   prog = space * stats * -1,
 
-  stats = lpeg.Ct(stat * stat^0)
-             / function (lst) return {tag="stats", stats = lst} end,
+  stats = lpeg.Ct(stat^1) / node("stats", "stats"),
+
+  block = T'{' * stats * T '}',
 
   stat = T";"
-       + Rw"return" * exp * T";" / function (e) return {tag = "return", e = e} end
-       + ID * T"=" * exp * T";"
-             / function (var, exp) return {tag = "assg", var = var, exp = exp} end,
+       + Rw"if" * exp * block * (Rw"else" * block)^-1
+              / node("if", "cond", "th", "el")
+       + Rw"return" * exp * T";" / node("return", "e")
+       + ID * T"=" * exp * T";" / node("assg", "var", "exp"),
 
-  primary = numeral / function (n) return {tag = "number", val = n} end
-          + T"(" * exp * T")" + T"{" * primary * "}"
-	  + ID / function (id) return {tag = "var", id = id} end,
+  primary = numeral / node("number", "val")
+          + T"(" * exp * T")"
+	  + ID / node("var", "id"),
 
-  power = T"-" * power / function (e) return {tag = "neg", e = e} end
+  power = T"-" * power / node("neg", "e")
           + primary * (T"^" * power)^-1 /
 	       function(e1, e2) return not e2 and e1 or
   		        {tag = "binop", op = "^", e1 = e1, e2 = e2} end,
 
-  product = lpeg.Ct(power * (opM * power)^0) / foldBin,
+  product = binOpL(power, opM),
 
-  sum = lpeg.Ct(product * (opA * product)^0) / foldBin,
+  sum = binOpL(product, opA),
 
-  comparison = lpeg.Ct(sum * (opC * sum)^-1) / foldBin,
+  comparison = binOpL(sum, opC),
 
-  space = (lpeg.S(" \t\n") + multicomment + comment)^0
+  space = (lpeg.S(" \t\n") + comment)^0
+            * lpeg.P(function (_,p) maxpos = math.max(maxpos, p); return true end)
 }
 
+function parser (source)
+  local ast = grammar:match(source)
+  if not ast then
+    io.stderr:write("syntax error: ",
+       string.sub(source, maxpos - 20, maxpos - 1),
+       "|", string.sub(source, maxpos, maxpos + 20))
+    os.exit(1)
+  end
+  return ast
+end
 
+end
 -----------------------------------------------------------
 local Compiler = { code = {}, vars = {}, nvars = 0 }
 
@@ -91,21 +137,40 @@ function Compiler:name2idx (name)
   return idx
 end
 
-function Compiler:addCode (op)
+function Compiler:addCode (op, ...)
+  local params = {...}
   local code = self.code
   code[#code + 1] = op
+  for i = 1, #params do
+    code[#code + 1] = params[i]
+  end
+  return #code
 end
 
+function Compiler:fixjmp2here (jmp)
+  self.code[jmp] = #self.code - jmp
+end
 
 function Compiler:codeStat (ast)
   local tag = ast.tag
   if tag == "return" then
     self:codeExp(ast.e)
     self:addCode("ret")
+  elseif tag == "if" then
+    self:codeExp(ast.cond)
+    local jmp = self:addCode("IfZJmp", 0)
+    self:codeStat(ast.th)
+    if not ast.el then
+      self:fixjmp2here(jmp)
+    else
+      local jmp1 = self:addCode("jmp", 0)
+      self:fixjmp2here(jmp)
+      self:codeStat(ast.el)
+      self:fixjmp2here(jmp1)
+    end
   elseif tag == "assg" then
     self:codeExp(ast.exp)
-    self:addCode("store")
-    self:addCode(self:name2idx(ast.var))
+    self:addCode("store", self:name2idx(ast.var))
   elseif tag == "stats" then
     for i = 1, #ast.stats do
       self:codeStat(ast.stats[i])
@@ -118,19 +183,16 @@ end
 function Compiler:codeExp (ast)
   local tag = ast.tag
   if tag == "number" then
-    self:addCode("push")
-    self:addCode(ast.val)
+    self:addCode("push", ast.val)
   elseif tag == "var" then
-    self:addCode("load")
-    self:addCode(self:name2idx(ast.id))
+    self:addCode("load", self:name2idx(ast.id))
   elseif tag == "neg" then
     self:codeExp(ast.e)
     self:addCode("neg")
   elseif tag == "binop" then
     self:codeExp(ast.e1)
     self:codeExp(ast.e2)
-    self:addCode("binop")
-    self:addCode(ast.op)
+    self:addCode("binop", ast.op)
   else error("unknown tag " .. tag)
   end
 end
@@ -138,8 +200,7 @@ end
 
 function compile (ast)
   Compiler:codeStat(ast)
-  Compiler:addCode("push")
-  Compiler:addCode(0)
+  Compiler:addCode("push", 0)
   Compiler:addCode("ret")
   return Compiler.code
 end
@@ -166,12 +227,21 @@ local function run (code, stack, mem)
   while true do
     local op = code[pc]
     -- [[
-      io.write("---", op, ": ")
-      for i = 1, top do io.write(stack[i], " ") end
+      io.write("---", pc, ":", op, ": ")
+      for i = 1, top do io.write(stack[i] or "nil", " ") end
       io.write("\n")
     --]]
     if op == "ret" then
       return
+    elseif op == "jmp" then
+      pc = pc + 1
+      pc = pc + code[pc]
+    elseif op == "IfZJmp" then
+      pc = pc + 1
+      if stack[top] == 0 then
+       pc = pc + code[pc]
+     end
+     top = top - 1
     elseif op == "push" then
       pc = pc + 1
       top = top + 1
@@ -197,7 +267,7 @@ local function run (code, stack, mem)
 end
 -----------------------------------------------------------
 local input = io.read("*a")
-local ast = grammar:match(input)
+local ast = parser(input)
 print(pt.pt(ast))
 local code = compile(ast)
 print(pt.pt(code))
