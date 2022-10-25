@@ -121,8 +121,8 @@ local grammar = lpeg.P{"prog",
   ty = Rw"float" * lpeg.Cc("float") / node("basictype", "ty")
      + Rw"array" * ty / node("array", "elem"),
 
-  funcDec = Rw"func" * ID * T"(" * params * T")" * block /
-              node("func", "name", "params", "body"),
+  funcDec = Rw"func" * ID * T":" * ty * T"(" * params * T")" * block /
+              node("func", "name", "ty", "params", "body"),
 
   params = lpeg.Ct((param * (T"," * param)^0)^-1),
 
@@ -189,7 +189,7 @@ end
 
 end
 -----------------------------------------------------------
-local Compiler = { funcs = {}, vars = {}, nvars = 0 }
+local Compiler = { funcs = {}, funcsRetTy = {}, vars = {}, nvars = 0 }
 local floatTy = {tag = "basictype", ty = "float"}
 
 function Compiler:name2idx (name)
@@ -351,8 +351,16 @@ function Compiler:codeStat (ast)
     self:codeExp(ast.e)
     self:addCode("print")
   elseif tag == "return" then
-    self:codeExp(ast.e)
-    self:addCode("ret", #self.params)
+    print("ast")
+    print(dump(ast.e))
+    local retTy = self:codeExp(ast.e)
+    print(dump(retTy))
+    print(dump(self.funcsRetTy[ast.e.name]))
+    if typeEq(self.funcsRetTy[ast.e.name], retTy) then
+      self:addCode("ret", #self.params)
+    else
+      error("invalid return type")
+    end
   elseif tag == "call" then
     self:codeCall(ast)
     self:addCode("pop", 1)
@@ -482,6 +490,7 @@ function Compiler:codeFunc (ast)
   self.locals = {}
   self.params = ast.params
   self.funcs[ast.name] = { code = self.code, params = ast.params }
+  self.funcsRetTy[ast.name] = ast.ty
   self:codeStat(ast.body)
   self:addCode("push", 0)
   self:addCode("ret", #self.params)
