@@ -1,6 +1,16 @@
-val = 1 + 1;
-val = val + 2;
-if (val == 3) {
-    val = 1;
+func testfunc (param1:float, param2:float) {
+    return 0;
 }
-return val;
+
+func main () {
+    local test : array float = newarray float [2];
+    test[0] = 10;
+    test[1] = 20;
+    local val : float = 1;
+    testfunc(1, val);
+    val = val + 2;
+    if (val == 3) {
+        val = 1;
+    }
+    return val;
+}

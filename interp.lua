@@ -2,6 +2,20 @@ local lpeg = require "lpeg"
 
 local pt = require "pt"
 
+-- função aux para debug, imprime tabelas
+function dump(o)
+  if type(o) == 'table' then
+     local s = '{ '
+     for k,v in pairs(o) do
+        if type(k) ~= 'number' then k = '"'..k..'"' end
+        s = s .. '['..k..'] = ' .. dump(v) .. ','
+     end
+     return s .. '} '
+  else
+     return tostring(o)
+  end
+end
+
 -----------------------------------------------------------
 local function I (msg)
   return lpeg.P(function () print(msg); return true end)
@@ -93,6 +107,7 @@ local block = lpeg.V("block")
 local call = lpeg.V("call")
 local args = lpeg.V("args")
 local params = lpeg.V("params")
+local param = lpeg.V("param")
 local funcDec = lpeg.V("funcDec")
 local lhs = lpeg.V("lhs")
 local ty = lpeg.V("ty")
@@ -109,7 +124,9 @@ local grammar = lpeg.P{"prog",
   funcDec = Rw"func" * ID * T"(" * params * T")" * block /
               node("func", "name", "params", "body"),
 
-  params = lpeg.Ct((ID * (T"," * ID)^0)^-1),
+  params = lpeg.Ct((param * (T"," * param)^0)^-1),
+
+  param = ID * T":" * ty / node("param", "name", "ty"),
 
   block = T'{' * lpeg.Ct(stat^1) * T '}' / node("block", "body"),
 
@@ -154,17 +171,17 @@ local grammar = lpeg.P{"prog",
   conjunction = opL(comparison, Op"&&", "conj"),
 
   disjunction = opL(conjunction, Op"||", "disj"),
-
+  
   space = (lpeg.S(" \t\n") + comment)^0
-            * lpeg.P(function (_,p) maxpos = math.max(maxpos, p); return true end)
+  * lpeg.P(function (_,p) maxpos = math.max(maxpos, p); return true end)
 }
 
 function parser (source)
   local ast = grammar:match(source)
   if not ast then
     io.stderr:write("syntax error: ",
-       string.sub(source, maxpos - 20, maxpos - 1),
-       "|", string.sub(source, maxpos, maxpos + 20))
+    string.sub(source, maxpos - 20, maxpos - 1),
+    "|", string.sub(source, maxpos, maxpos + 20))
     os.exit(1)
   end
   return ast
@@ -173,6 +190,7 @@ end
 end
 -----------------------------------------------------------
 local Compiler = { funcs = {}, vars = {}, nvars = 0 }
+local floatTy = {tag = "basictype", ty = "float"}
 
 function Compiler:name2idx (name)
   local idx = self.vars[name]
@@ -279,14 +297,17 @@ local function typeEq (t1, t2)
   return false
 end
 
-function Compiler:codeLhs (ast)
+function Compiler:codeLhs (ast, expty)
   local tag = ast.tag
   if tag == "var" then
     local loc = self:searchLocal(ast.id)
     if not loc then
       self:addCode("storeG", self:name2idx(ast.id))
     else
-      self:addCode("storeL", loc.idx)
+      if typeEq(loc.ty, expty) then
+        self:addCode("storeL", loc.idx)
+      else error("assigning invalid type to variable")
+      end
     end
   elseif tag == "indexed" then
     self:codeExp(ast.array) 
@@ -305,8 +326,21 @@ function Compiler:codeCall (ast)
   if #func.params ~= #ast.args then
     throw("wrong number of arguments")
   end
+  local loc;
   for i = 1, #ast.args do
-    self:codeExp(ast.args[i])
+    if ast.args[i].tag == "number" then
+      ast.args[i].ty = floatTy;
+    else
+      loc = self:searchLocal(ast.args[i].id)
+      if ast.args[i].tag == "var" then
+        ast.args[i].ty = loc.ty;
+      end
+    end
+    if typeEq(func.params[i].ty, ast.args[i].ty) then
+      self:codeExp(ast.args[i])
+    else
+      throw("invalid param type on function call")
+    end
   end
   self:addCode("call", func.code)
 end
@@ -356,8 +390,8 @@ function Compiler:codeStat (ast)
       self:fixlabel2here(L2)
     end
   elseif tag == "assg" then
-    self:codeExp(ast.exp)
-    self:codeLhs(ast.lhs)
+    local expty = self:codeExp(ast.exp)
+    self:codeLhs(ast.lhs, expty)
   elseif tag == "block" then
     local nvars = #self.locals
     for i = 1, #ast.body do
@@ -372,7 +406,6 @@ function Compiler:codeStat (ast)
   end
 end
 
-local floatTy = {tag = "basictype", ty = "float"}
 
 function Compiler:codeFloatExp (ast)
   local ty = self:codeExp(ast)
