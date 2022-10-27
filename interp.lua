@@ -101,12 +101,19 @@ local funcDec = lpeg.V("funcDec")
 local retty = lpeg.V("retty")
 local lhs = lpeg.V("lhs")
 local ty = lpeg.V("ty")
+local decs = lpeg.V("decs")
+local glob = lpeg.V("glob")
 
 local exp = disjunction
 
 local grammar = lpeg.P{"prog",
 
-  prog = space * lpeg.Ct(funcDec^1) * -1,
+  prog = space * lpeg.Ct(decs^1) * -1,
+
+  decs = glob + funcDec,
+  
+  glob = Rw"global" * ID * T":" * ty * T";"
+              / node("glob", "name", "ty"),
 
   ty = Rw"float" * lpeg.Cc("float") / node("basictype", "ty")
      + Rw"array" * ty / node("array", "elem"),
@@ -181,7 +188,7 @@ end
 
 end
 -----------------------------------------------------------
-local Compiler = { funcs = {}, vars = {}, nvars = 0 }
+local Compiler = {  funcs = {}, vars = {}, nvars = 0 }
 
 function Compiler:name2idx (name)
   local idx = self.vars[name]
@@ -276,6 +283,16 @@ function Compiler:searchLocal (name)
 end
 
 
+function Compiler:searchGlobal (name)
+  for i = 1, #self.vars do
+    if self.vars[i].name == name then
+      return self.vars[i]
+    end
+  end
+  return nil
+end
+
+
 local function typeEq (t1, t2)
   if t1.tag == t2.tag then
     if t1.tag == "basictype" then
@@ -288,12 +305,20 @@ local function typeEq (t1, t2)
   return false
 end
 
+
 function Compiler:codeLhs (ast)
   local tag = ast.tag
   if tag == "var" then
     local loc = self:searchLocal(ast.id)
     if not loc then
-      self:addCode("storeG", self:name2idx(ast.id))
+      local glob = self:searchGlobal(ast.id)
+      if glob then
+        print("glob")
+        self:addCode("storeG", glob.idx)
+        return glob.ty
+      else
+        throw("undefined variable " .. ast.id)
+      end
     else
       self:addCode("storeL", loc.idx)
       return loc.ty
@@ -337,6 +362,11 @@ function Compiler:codeStat (ast)
     self:addCode("print")
   elseif tag == "return" then
     local retty = self:codeExp(ast.e)
+    print("\n retty")
+    print(pt.pt(retty))
+    print("\n")
+    print(pt.pt(self.retty))
+    print("--------")
     if not typeEq(retty, self.retty) then
       throw("invalid return type")
     end
@@ -355,6 +385,10 @@ function Compiler:codeStat (ast)
     end
     self.locals[#self.locals + 1] = ast
     ast.idx = #self.locals
+  elseif tag == "glob" then
+    self:addCode("push", 0)
+    self.vars[#self.vars + 1] = ast
+    ast.idx = #self.vars
   elseif tag == "while" then
     local target = #self.code
     local L1 = newlabel()
@@ -378,6 +412,8 @@ function Compiler:codeStat (ast)
       self:fixlabel2here(L2)
     end
   elseif tag == "assg" then
+    print(pt.pt(ast.exp))
+    print(pt.pt(ast.lhs))
     local tyrhs = self:codeExp(ast.exp)
     local tylhs = self:codeLhs(ast.lhs)
     if not typeEq(tyrhs, tylhs) then
@@ -414,7 +450,13 @@ function Compiler:codeExp (ast)
   elseif tag == "var" then
     local loc = self:searchLocal(ast.id)
     if not loc then
-      self:addCode("loadG", self:name2idx(ast.id))
+      local glob = self:searchGlobal(ast.id)
+      if glob then
+        self:addCode("loadG", glob.idx)
+        ty = glob.ty
+      else
+        throw("undefined variable " .. ast.id)
+      end
     else
       self:addCode("loadL", loc.idx)
       ty = loc.ty
@@ -469,7 +511,9 @@ end
 
 
 function Compiler:codeFunc (ast)
-  self.code = {}
+  if not self.code then
+    self.code = {}
+  end
   self.locals = {}
   self.params = ast.params
   self.retty = ast.retty
@@ -482,9 +526,25 @@ function Compiler:codeFunc (ast)
   self:addCode("ret", #self.params)
 end
 
+function Compiler:codeGlobal (ast)
+  if not self.code then
+    self.code = {}
+  end
+  local glob = self:searchGlobal(ast.name)
+  if not glob then
+    self:codeStat(ast)
+  else error ("duplicate global declaration: ".. ast.name)
+  end
+end
+
 function compile (ast)
+  local i = 1;
   for i = 1, #ast do
-    Compiler:codeFunc(ast[i])
+    if ast[i].tag == "func" then
+      Compiler:codeFunc(ast[i])
+    elseif ast[i].tag == "glob" then
+      Compiler:codeGlobal(ast[i])
+    end
   end
   local main = Compiler.funcs["main"]
   if not main then
