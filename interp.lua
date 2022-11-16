@@ -14,7 +14,7 @@ local function throw (msg)
 end
 
 
-local intTy = {tag = "basictype", ty = "int"}
+local floatTy = {tag = "basictype", ty = "float"}
 -----------------------------------------------------------
 
 local parser
@@ -111,13 +111,13 @@ local grammar = lpeg.P{"prog",
 
   globalDec = Rw"global" * ID * ty / node("global", "name", "ty"),
 
-  ty = Rw"int" * lpeg.Cc("int") / node("basictype", "ty")
+  ty = Rw"float" * lpeg.Cc("float") / node("basictype", "ty")
      + Rw"array" * ty / node("array", "elem"),
 
   funcDec = Rw"func" * ID * T"(" * params * T")" * retty * block /
               node("func", "name", "params", "retty", "body"),
 
-  retty = T":" * ty + lpeg.Cc(intTy),
+  retty = T":" * ty + lpeg.Cc(floatTy),
 
   params = lpeg.Ct((param * (T"," * param)^0)^-1),
 
@@ -263,7 +263,7 @@ function Compiler:codeJmpFalse (ast, label)
     self:codeJmpFalse(ast.e2, label)
     self:fixlabel2here(labelEnd)
   else
-    self:codeIntExp(ast)
+    self:codeFloatExp(ast)
     self:addJmp("IfZJmp", label)
   end
 end
@@ -282,7 +282,7 @@ function Compiler:codeJmpTrue (ast, label)
     self:codeJmpTrue(ast.e2, label)
     self:fixlabel2here(labelEnd)
   else
-    self:codeIntExp(ast)
+    self:codeFloatExp(ast)
     self:addJmp("IfNZJmp", label)
   end
 end
@@ -305,8 +305,8 @@ end
 
 local function type2VM (ty)
   if ty.tag == "basictype" then
-    if ty.ty == "int" then
-      return "i32"
+    if ty.ty == "float" then
+      return "double"
     end
   elseif ty.tag == "array" then
     return type2VM(ty.elem) .. "*"
@@ -327,7 +327,6 @@ local function typeEq (t1, t2)
   return false
 end
 
-
 function Compiler:codeLhs (ast)
   local tag = ast.tag
   if tag == "var" then
@@ -343,7 +342,7 @@ function Compiler:codeLhs (ast)
     if tyarr.tag ~= "array" then
       throw("indexing a non array")
     end
-    self:codeIntExp(ast.index)
+    self:codeFloatExp(ast.index)
     self:addCode("setarray")
     return tyarr.elem
   else error("unknown tag " .. tag)
@@ -352,8 +351,6 @@ end
 
 
 function Compiler:codeCall (ast)
-  local res = self:newreg()
-  ast.res = res
   local func = self.funcs[ast.name]
   if not func then
     throw("calling undefined function: " .. ast.name)
@@ -362,23 +359,12 @@ function Compiler:codeCall (ast)
     throw("wrong number of arguments")
   end
   for i = 1, #ast.args do
-    local arg = ast.args[i]
-    local tyarg = self:codeExp(arg)
+    local tyarg = self:codeExp(ast.args[i])
     if not typeEq(tyarg, func.params[i].ty) then
       throw("invalid parameter type " .. i)
     end
   end
-
-  self:emit("%s = call %s @%s(",
-             res, type2VM(func.retty), ast.name)
-
-  for i = 1, #ast.args do
-    local arg = ast.args[i]
-    if i ~= 1 then self:emit(", ") end
-    self:emit("%s %s", type2VM(arg.ty), arg.res)
-  end
-  self:emit(")\n")
-
+  self:addCode("call", func.code)
   return func.retty
 end
 
@@ -399,19 +385,16 @@ function Compiler:codeStat (ast)
     self:codeCall(ast)
     self:addCode("pop", 1)
   elseif tag == "local" then
-    local idx = self:newreg()
-    local ety = ast.ty
-    local lety = type2VM(ety)
-    ast.idx = idx
-    self:emit("%s = alloca %s\n", idx, lety)
-    if ast.e then
+    if not ast.e then
+      self:addCode("push", 0)
+    else
       self:codeExp(ast.e)
-      if not typeEq(ety, ast.ty) then
-        throw("incompatible types")
-      end
-      self:emit("store %s %s, %s* %s\n", lety, ast.e.res, lety, idx)
+    end
+    if ast.e and not typeEq(ast.e.ty, ast.ty) then
+      throw("incompatible types")
     end
     self.locals[#self.locals + 1] = ast
+    ast.idx = #self.locals
   elseif tag == "while" then
     local target = #self.code
     local L1 = newlabel()
@@ -455,23 +438,23 @@ function Compiler:codeStat (ast)
 end
 
 
-function Compiler:codeIntExp (ast)
+function Compiler:codeFloatExp (ast)
   local ty = self:codeExp(ast)
-  if ty.tag ~= "basictype" or ty.ty ~= "int" then
+  if ty.tag ~= "basictype" or ty.ty ~= "float" then
     throw("expression not a number (" .. ast.tag .. ")")
   end
 end
 
-local ops = {["+"] = "add", ["-"] = "sub",
-             ["*"] = "mul", ["/"] = "div", ["%"] = "mod"
+local ops = {["+"] = "fadd", ["-"] = "fsub",
+             ["*"] = "fmul", ["/"] = "fdiv", 
 }
 
 function Compiler:codeExp (ast)
   local tag = ast.tag
   local ty
   if tag == "number" then
-    ast.res = string.format("%d", ast.val)
-    ty = intTy
+    ast.res = string.format("%e", ast.val)
+    ty = floatTy
   elseif tag == "var" then
     local loc = self:searchLocal(ast.id)
     if loc then
@@ -487,67 +470,42 @@ function Compiler:codeExp (ast)
     if aty.tag ~= "array" then
       throw("indexing a non array")
     end
-    self:codeIntExp(ast.index)
+    self:codeFloatExp(ast.index)
     self:addCode("getarray")
     ty = aty.elem
   elseif tag == "newarray" then
-    local resizep = self:newreg()
-    local resizeI = self:newreg()
-    local tyelem = type2VM(ast.ty)
-    self:emit([[
-%s = getelementptr %s, %s* null, i32 1
-%s = ptrtoint %s* %s to i64
-]], resizep, type2VM(ast.ty), tyelem, resizeI, tyelem, resizep)
-    local rsize64 = self:newreg()
-    local rsizeB = self:newreg()
-    local pi8 = self:newreg()
-    local pT = self:newreg()
-    self:codeIntExp(ast.size)
-    self:emit([[
-%s = sext i32 %s to i64
-%s = mul i64 %s, %s
-%s = call i8* @malloc(i64 %s)
-%s = bitcast i8* %s to %s*
-]], rsize64, ast.size.res, rsizeB, rsize64,
-    resizeI, pi8, rsizeB, pT, pi8, tyelem)
-    ast.res = pT
+    self:codeFloatExp(ast.size)
+    self:addCode("newarray")
     ty = {tag = "array", elem = ast.ty}
   elseif tag == "not" then
-    local reg1 = self:newreg()
-    local reg2 = self:newreg()
-    ast.res = reg
-    self:codeIntExp(ast.e)
-    self:emit("%s = icmp eq i32 %s, 0\n%s = zext i1 %s to i32\n",
-      reg1, ast.e.res, reg2, reg1)
-    ast.res = reg2
-    ty = intTy
+    self:codeFloatExp(ast.e)
+    self:addCode("not")
+    ty = floatTy
   elseif tag == "neg" then
-    local reg = self:newreg()
-    ast.res = reg
-    self:codeIntExp(ast.e)
-    self:emit("%s = sub i32 0, %s\n", reg, ast.e.res)
-    ty = intTy
+    self:codeFloatExp(ast.e)
+    self:addCode("neg")
+    ty = floatTy
   elseif tag == "binop" then
-    self:codeIntExp(ast.e1)
-    self:codeIntExp(ast.e2)
-    ty = intTy
+    self:codeFloatExp(ast.e1)
+    self:codeFloatExp(ast.e2)
+    ty = floatTy
     ast.res = self:newreg()
-    self:emit("%s = %s i32 %s, %s\n",
+    self:emit("%s = %s double %s, %s\n",
                   ast.res, ops[ast.op], ast.e1.res, ast.e2.res)
   elseif tag == "conj" then
     local label = newlabel()
-    self:codeIntExp(ast.e1)
+    self:codeFloatExp(ast.e1)
     self:addJmp("andjmp", label)
-    self:codeIntExp(ast.e2)
+    self:codeFloatExp(ast.e2)
     self:fixlabel2here(label)
-    ty = intTy
+    ty = floatTy
   elseif tag == "disj" then
     local label = newlabel()
-    self:codeIntExp(ast.e1)
+    self:codeFloatExp(ast.e1)
     self:addJmp("orjmp", label)
-    self:codeIntExp(ast.e2)
+    self:codeFloatExp(ast.e2)
     self:fixlabel2here(label)
-    ty = intTy
+    ty = floatTy
   elseif tag == "call" then
     ty = self:codeCall(ast)
   else error("unknown tag " .. tag)
@@ -583,16 +541,12 @@ function Compiler:codeFunc (ast)
     param.idx = addr
   end
   self:codeStat(ast.body)
-  self:emit("}\n\n")
+  self:emit("}\n")
   self:addCode("push", 0)
   self:addCode("ret", #self.params)
 end
 
 function compile (ast)
-  Compiler:emit[[
-declare i8* @malloc(i64)
-
-]]
   for i = 1, #ast do
     Compiler:codeFunc(ast[i])
   end
