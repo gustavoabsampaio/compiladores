@@ -328,14 +328,24 @@ local function typeEq (t1, t2)
 end
 
 
+function Compiler:codeAddr (array, index)
+    local regaddr = self:newreg()
+    local tyresVM = type2VM(array.ty.elem)
+    self:emit([[
+%s = getelementptr %s, %s* %s, i32 %s
+    ]], regaddr, tyresVM, tyresVM, array.res, index.res)
+    return regaddr
+end
+
+
 function Compiler:codeLhs (ast)
   local tag = ast.tag
   if tag == "var" then
     local loc = self:searchLocal(ast.id)
     if not loc then
-      self:addCode("storeG", self:name2idx(ast.id))
+      throw("global not yet implemented")
     else
-      self:addCode("storeL", loc.idx)
+      ast.res = loc.idx
       return loc.ty
     end
   elseif tag == "indexed" then
@@ -344,7 +354,7 @@ function Compiler:codeLhs (ast)
       throw("indexing a non array")
     end
     self:codeIntExp(ast.index)
-    self:addCode("setarray")
+    ast.res = self:codeAddr(ast.array, ast.index)
     return tyarr.elem
   else error("unknown tag " .. tag)
   end
@@ -383,11 +393,19 @@ function Compiler:codeCall (ast)
 end
 
 
+function Compiler:codePrint (ast)
+  self:codeExp(ast.e)
+  self:emit([[
+call i32 (i8*, ...) @printf(i8* getelementptr ([4 x i8],
+             [4 x i8]* @.%s, i64 0, i64 0), i32 %s)
+]], (ast.e.ty == "array" and "str.1" or "str"), ast.e.res)
+end
+
+
 function Compiler:codeStat (ast)
   local tag = ast.tag
   if tag == "print" then
-    self:codeExp(ast.e)
-    self:addCode("print")
+    self:codePrint(ast)
   elseif tag == "return" then
     local retty = self:codeExp(ast.e)
     if not typeEq(retty, self.retty) then
@@ -440,6 +458,8 @@ function Compiler:codeStat (ast)
     if not typeEq(tyrhs, tylhs) then
       throw("invalid assignment")
     end
+    self:emit("store %s %s, %s* %s\n",
+                type2VM(tylhs), ast.exp.res, type2VM(tylhs), ast.lhs.res)
   elseif tag == "block" then
     local nvars = #self.locals
     for i = 1, #ast.body do
@@ -488,7 +508,13 @@ function Compiler:codeExp (ast)
       throw("indexing a non array")
     end
     self:codeIntExp(ast.index)
-    self:addCode("getarray")
+    local regaddr = self:codeAddr(ast.array, ast.index)
+    local regres = self:newreg()
+    local tyresVM = type2VM(aty.elem)
+    self:emit([[
+%s = load %s, %s* %s
+    ]], regres, tyresVM, tyresVM, regaddr)
+    ast.res = regres
     ty = aty.elem
   elseif tag == "newarray" then
     local resizep = self:newreg()
@@ -583,14 +609,17 @@ function Compiler:codeFunc (ast)
     param.idx = addr
   end
   self:codeStat(ast.body)
+  self:emit("ret i32 0\n")
   self:emit("}\n\n")
-  self:addCode("push", 0)
-  self:addCode("ret", #self.params)
 end
 
 function compile (ast)
   Compiler:emit[[
 declare i8* @malloc(i64)
+
+@.str = private constant [4 x i8] c"%%d\0A\00"
+@.str.1 = private constant [4 x i8] c"%%p\0A\00"
+declare i32 @printf(i8*, ...)
 
 ]]
   for i = 1, #ast do
