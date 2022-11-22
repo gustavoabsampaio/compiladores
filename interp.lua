@@ -486,6 +486,12 @@ local ops = {["+"] = "add", ["-"] = "sub",
              ["*"] = "mul", ["/"] = "div", ["%"] = "mod"
 }
 
+local opsCmp ={[">"] = "icmp sgt", ["<"] = "icmp slt", 
+               ["=="] = "icmp eq", ["~="] = "icmp ne",
+               [">="] = "icmp sge", ["<="] = "icmp sle"
+}
+
+
 function Compiler:codeExp (ast)
   local tag = ast.tag
   local ty
@@ -558,8 +564,19 @@ function Compiler:codeExp (ast)
     self:codeIntExp(ast.e2)
     ty = intTy
     ast.res = self:newreg()
-    self:emit("%s = %s i32 %s, %s\n",
-                  ast.res, ops[ast.op], ast.e1.res, ast.e2.res)
+    local op = ops[ast.op]
+    if op then
+      self:emit("%s = %s i32 %s, %s\n",
+        ast.res, op, ast.e1.res, ast.e2.res)
+    else
+      local resize32 = self:newreg()
+      op = opsCmp[ast.op]
+      self:emit("%s = %s i32 %s, %s\n",
+        ast.res, op, ast.e1.res, ast.e2.res)
+      self:emit("%s = zext i1 %s to i32\n",
+        resize32, ast.res)
+    end
+    
   elseif tag == "conj" then
     local label = newlabel()
     self:codeIntExp(ast.e1)

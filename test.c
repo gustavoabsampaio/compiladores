@@ -1,5 +1,4 @@
-int foo() {
-    int arr[3];
-    arr[1] = 5;
-    return arr[1];
+int foo(int b, int c) {
+    
+    return b>c;
 }
