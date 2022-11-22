@@ -569,20 +569,32 @@ function Compiler:codeExp (ast)
       self:emit("%s = %s i32 %s, %s\n",
         ast.res, op, ast.e1.res, ast.e2.res)
     else
-      local resize32 = self:newreg()
+      local cmp = self:newreg()
       op = opsCmp[ast.op]
       self:emit("%s = %s i32 %s, %s\n",
-        ast.res, op, ast.e1.res, ast.e2.res)
+        cmp, op, ast.e1.res, ast.e2.res)
       self:emit("%s = zext i1 %s to i32\n",
-        resize32, ast.res)
+        ast.res, cmp)
     end
-    
   elseif tag == "conj" then
     local label = newlabel()
     self:codeIntExp(ast.e1)
     self:addJmp("andjmp", label)
     self:codeIntExp(ast.e2)
     self:fixlabel2here(label)
+    
+    local e1Cmp = self:newreg()
+    local e2Cmp = self:newreg()
+    local andreg = self:newreg()
+    ast.res = self:newreg()
+    self:emit("%s = icmp ne i32 %s, 0\n",
+      e1Cmp, ast.e1.res)
+    self:emit("%s = icmp ne i32 %s, 0\n",
+      e2Cmp, ast.e2.res)
+    self:emit("%s = and i1 %s, %s\n",
+      andreg, e1Cmp, e2Cmp)
+    self:emit("%s = zext i1 %s to i32\n",
+      ast.res, andreg)
     ty = intTy
   elseif tag == "disj" then
     local label = newlabel()
@@ -590,6 +602,15 @@ function Compiler:codeExp (ast)
     self:addJmp("orjmp", label)
     self:codeIntExp(ast.e2)
     self:fixlabel2here(label)
+    local icmp = self:newreg()
+    local orreg = self:newreg()
+    ast.res = self:newreg()
+    self:emit("%s = or i32 %s, %s\n",
+      orreg, ast.e1.res, ast.e2.res)
+    self:emit("%s = icmp ne i32 %s, 0\n",
+      icmp, orreg)
+    self:emit("%s = zext i1 %s to i32\n",
+      ast.res, orreg)
     ty = intTy
   elseif tag == "call" then
     ty = self:codeCall(ast)

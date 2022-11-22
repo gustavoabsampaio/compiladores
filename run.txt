@@ -1,6 +1,6 @@
 func main () {
     local b:int = 10;
     local c:int = 20;
-    return b > c;
+    return b || c;
 }
 
