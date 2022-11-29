@@ -506,6 +506,29 @@ local ops = {["+"] = "add", ["-"] = "sub",
              ["*"] = "mul", ["/"] = "div", ["%"] = "mod"
 }
 
+function Compiler:codeJunc (ast, junc)
+  if junc ~= "eq" and junc ~="ne" then
+    throw("invalid llc junc comparison")
+  end
+  self:codeIntExp(ast.e1)
+  local label1 = self.currentlabel
+  local labelelse = self:newlabel()
+  local labelfinal = self:newlabel()
+  self:emit([[
+    %r1 = icmp %s i32 %s, 0
+    br i1 %r1, label %%%s, label %%%s
+  ]], junc, ast.e1.res, labelelse, labelfinal)
+  self:codelabel(labelelse)
+  self:codeIntExp(ast.e2)
+  local label2 = self.currentlabel
+  self:emit("br label %%%s\n", labelfinal)
+  self:codelabel(labelfinal)
+  ast.res = self:emit([[
+      %r1 = phi i32 [ %s, %%%s ], [ %s, %%%s ]
+    ]], ast.e1.res, label1, ast.e2.res, label2)
+  return intTy
+end
+
 function Compiler:codeExp (ast)
   local tag = ast.tag
   local ty
@@ -573,30 +596,9 @@ function Compiler:codeExp (ast)
     ast.res = self:emit("%r1 = %s i32 %s, %s\n",
                   ops[ast.op], ast.e1.res, ast.e2.res)
   elseif tag == "conj" then
-    local label = newlabel()
-    self:codeIntExp(ast.e1)
-    self:addJmp("andjmp", label)
-    self:codeIntExp(ast.e2)
-    self:fixlabel2here(label)
-    ty = intTy
+    ty = self:codeJunc(ast, "ne")
   elseif tag == "disj" then
-    self:codeIntExp(ast.e1)
-    local label1 = self.currentlabel
-    local labelelse = self:newlabel()
-    local labelfinal = self:newlabel()
-    self:emit([[
-%r1 = icmp eq i32 %s, 0
-br i1 %r1, label %%%s, label %%%s
-]], ast.e1.res, labelelse, labelfinal)
-    self:codelabel(labelelse)
-    self:codeIntExp(ast.e2)
-    local label2 = self.currentlabel
-    self:emit("br label %%%s\n", labelfinal)
-    self:codelabel(labelfinal)
-    ast.res = self:emit([[
-%r1 = phi i32 [ %s, %%%s ], [ %s, %%%s ]
-]], ast.e1.res, label1, ast.e2.res, label2)
-    ty = intTy
+    ty = self:codeJunc(ast, "eq")
   elseif tag == "call" then
     ty = self:codeCall(ast)
   else error("unknown tag " .. tag)

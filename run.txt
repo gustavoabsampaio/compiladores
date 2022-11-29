@@ -1,7 +1,3 @@
-global var:array float;
-
-func main() {
-    var = newarray float [10];
-    var[1] = 10;
-    return var[1];
+func main () {
+    return 10 && 0;
 }
