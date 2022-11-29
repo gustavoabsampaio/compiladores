@@ -184,7 +184,7 @@ end
 
 end
 -----------------------------------------------------------
-local Compiler = { funcs = {}, vars = {}, nvars = 0 }
+local Compiler = { funcs = {}, vars = {}, nvars = 0}
 
 
 function Compiler:newcount ()
@@ -201,6 +201,18 @@ end
 
 function Compiler:newreg ()
   return count2reg(self:newcount())
+end
+
+
+function Compiler:newlabel ()
+  return string.format("L%d", self:newcount()) 
+end
+
+function Compiler:codelabel (label)
+  label = label or self:newlabel()
+  self:emit("\n%s:\n", label)
+  self.currentlabel = label
+  return label
 end
 
 
@@ -223,13 +235,24 @@ function Compiler:addCode (...)
 end
 
 
-function Compiler:emit (fmt, ...)
-  io.write(string.format(fmt, ...))
+function Compiler:preprocess (fmt)
+  local lastdefined
+  local regs = {}
+  fmt = string.gsub(fmt, "%%r(%d) *(=?)", function(reg,def)
+    if def == "=" then
+      lastdefined = self:newreg()
+      regs[reg] = lastdefined
+    end
+    return string.format("%%%s %s", regs[reg], def)
+  end)
+  return fmt, lastdefined
 end
 
 
-local function newlabel ()
-  return {}
+function Compiler:emit (fmt, ...)
+  local fmt, res = self:preprocess(fmt)
+  io.write(string.format(fmt, ...))
+  return res
 end
 
 
@@ -329,12 +352,10 @@ end
 
 
 function Compiler:codeAddr (array, index)
-    local regaddr = self:newreg()
     local tyresVM = type2VM(array.ty.elem)
-    self:emit([[
-%s = getelementptr %s, %s* %s, i32 %s
-    ]], regaddr, tyresVM, tyresVM, array.res, index.res)
-    return regaddr
+    return self:emit([[
+%r1 = getelementptr %s, %s* %s, i32 %s
+    ]], tyresVM, tyresVM, array.res, index.res)
 end
 
 
@@ -413,21 +434,20 @@ function Compiler:codeStat (ast)
     end
     self:addCode("ret", #self.params)
     self:emit("ret %s %s\n", type2VM(ast.e.ty), ast.e.res)
+    self:codelabel()
   elseif tag == "call" then
     self:codeCall(ast)
     self:addCode("pop", 1)
   elseif tag == "local" then
-    local idx = self:newreg()
     local ety = ast.ty
     local lety = type2VM(ety)
-    ast.idx = idx
-    self:emit("%s = alloca %s\n", idx, lety)
+    ast.idx = self:emit("%r1 = alloca %s\n", lety)
     if ast.e then
       self:codeExp(ast.e)
       if not typeEq(ety, ast.ty) then
         throw("incompatible types")
       end
-      self:emit("store %s %s, %s* %s\n", lety, ast.e.res, lety, idx)
+      self:emit("store %s %s, %s* %s\n", lety, ast.e.res, lety, ast.idx)
     end
     self.locals[#self.locals + 1] = ast
   elseif tag == "while" then
@@ -486,12 +506,6 @@ local ops = {["+"] = "add", ["-"] = "sub",
              ["*"] = "mul", ["/"] = "div", ["%"] = "mod"
 }
 
-local opsCmp ={[">"] = "icmp sgt", ["<"] = "icmp slt", 
-               ["=="] = "icmp eq", ["~="] = "icmp ne",
-               [">="] = "icmp sge", ["<="] = "icmp sle"
-}
-
-
 function Compiler:codeExp (ast)
   local tag = ast.tag
   local ty
@@ -502,9 +516,8 @@ function Compiler:codeExp (ast)
     local loc = self:searchLocal(ast.id)
     if loc then
       ty = loc.ty
-      ast.res = self:newreg()
-      self:emit("%s = load %s, %s* %s\n",
-                ast.res, type2VM(ty), type2VM(ty), loc.idx)
+      ast.res = self:emit("%r1 = load %s, %s* %s\n",
+                type2VM(ty), type2VM(ty), loc.idx)
     else
       self:addCode("loadG", self:name2idx(ast.id))
     end
@@ -515,20 +528,18 @@ function Compiler:codeExp (ast)
     end
     self:codeIntExp(ast.index)
     local regaddr = self:codeAddr(ast.array, ast.index)
-    local regres = self:newreg()
     local tyresVM = type2VM(aty.elem)
-    self:emit([[
-%s = load %s, %s* %s
-    ]], regres, tyresVM, tyresVM, regaddr)
-    ast.res = regres
+    ast.res = self:emit([[
+%r1 = load %s, %s* %s
+    ]], tyresVM, tyresVM, regaddr)
     ty = aty.elem
   elseif tag == "newarray" then
     local resizep = self:newreg()
     local resizeI = self:newreg()
     local tyelem = type2VM(ast.ty)
     self:emit([[
-%s = getelementptr %s, %s* null, i32 1
-%s = ptrtoint %s* %s to i64
+%r1 = getelementptr %s, %s* null, i32 1
+%r2 = ptrtoint %s* %s to i64
 ]], resizep, type2VM(ast.ty), tyelem, resizeI, tyelem, resizep)
     local rsize64 = self:newreg()
     local rsizeB = self:newreg()
@@ -545,13 +556,9 @@ function Compiler:codeExp (ast)
     ast.res = pT
     ty = {tag = "array", elem = ast.ty}
   elseif tag == "not" then
-    local reg1 = self:newreg()
-    local reg2 = self:newreg()
-    ast.res = reg
     self:codeIntExp(ast.e)
-    self:emit("%s = icmp eq i32 %s, 0\n%s = zext i1 %s to i32\n",
-      reg1, ast.e.res, reg2, reg1)
-    ast.res = reg2
+    ast.res = self:emit("%r1 = icmp eq i32 %s, 0\n%r2 = zext i1 %r1 to i32\n",
+      ast.e.res)
     ty = intTy
   elseif tag == "neg" then
     local reg = self:newreg()
@@ -563,20 +570,8 @@ function Compiler:codeExp (ast)
     self:codeIntExp(ast.e1)
     self:codeIntExp(ast.e2)
     ty = intTy
-    ast.res = self:newreg()
-    local op = ops[ast.op]
-    if op then
-      self:emit("%s = %s i32 %s, %s\n",
-        ast.res, op, ast.e1.res, ast.e2.res)
-    else
-      local resize32 = self:newreg()
-      op = opsCmp[ast.op]
-      self:emit("%s = %s i32 %s, %s\n",
-        ast.res, op, ast.e1.res, ast.e2.res)
-      self:emit("%s = zext i1 %s to i32\n",
-        resize32, ast.res)
-    end
-    
+    ast.res = self:emit("%r1 = %s i32 %s, %s\n",
+                  ops[ast.op], ast.e1.res, ast.e2.res)
   elseif tag == "conj" then
     local label = newlabel()
     self:codeIntExp(ast.e1)
@@ -585,11 +580,22 @@ function Compiler:codeExp (ast)
     self:fixlabel2here(label)
     ty = intTy
   elseif tag == "disj" then
-    local label = newlabel()
     self:codeIntExp(ast.e1)
-    self:addJmp("orjmp", label)
+    local label1 = self.currentlabel
+    local labelelse = self:newlabel()
+    local labelfinal = self:newlabel()
+    self:emit([[
+%r1 = icmp eq i32 %s, 0
+br i1 %r1, label %%%s, label %%%s
+]], ast.e1.res, labelelse, labelfinal)
+    self:codelabel(labelelse)
     self:codeIntExp(ast.e2)
-    self:fixlabel2here(label)
+    local label2 = self.currentlabel
+    self:emit("br label %%%s\n", labelfinal)
+    self:codelabel(labelfinal)
+    ast.res = self:emit([[
+%r1 = phi i32 [ %s, %%%s ], [ %s, %%%s ]
+]], ast.e1.res, label1, ast.e2.res, label2)
     ty = intTy
   elseif tag == "call" then
     ty = self:codeCall(ast)
@@ -614,9 +620,10 @@ function Compiler:codeFunc (ast)
     if i > 1 then params = params .. ", " end
     params = string.format("%s%s %s", params, type2VM(ast.params[i].ty), idx)
   end
-  self:emit("define %s @%s (%s) {\n",
+  self:emit("define %s @%s (%s) {",
             type2VM(ast.retty), ast.name, params)
   self.funcs[ast.name] = { code = self.code, params = ast.params, retty = ast.retty }
+  self:codelabel()
   for i = 1, #self.params do
     local param = self.params[i]
     local addr = count2reg(self:newcount())
