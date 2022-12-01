@@ -1,0 +1,15 @@
+func foo(param:int):int{
+    return 40*param;
+}
+
+func main () {
+    local arr : array = newarray int [10];
+    arr[1] = foo(1);
+    arr[2] = 0;
+    if (arr[1]+10 && arr[2] > (foo(2)/2 || foo(0)+5)){
+        return 10 + arr[2];
+    }
+    else {
+        return 20 && foo(arr[2]);
+    }
+}
