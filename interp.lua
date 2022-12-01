@@ -184,11 +184,11 @@ end
 
 end
 -----------------------------------------------------------
-local Compiler = { funcs = {}, vars = {}, nvars = 0}
+local Compiler = { funcs = {}, vars = {}, nvars = 0 }
 
 
 function Compiler:newcount ()
-  local count = self.count 
+  local count = self.count
   self.count = count + 1
   return count
 end
@@ -205,10 +205,10 @@ end
 
 
 function Compiler:newlabel ()
-  return string.format("L%d", self:newcount()) 
+  return string.format("L%d", self:newcount())
 end
 
-function Compiler:codelabel (label)
+function Compiler:codeLabel (label)
   label = label or self:newlabel()
   self:emit("\n%s:\n", label)
   self.currentlabel = label
@@ -256,57 +256,31 @@ function Compiler:emit (fmt, ...)
 end
 
 
-function Compiler:addJmp (jmp, label)
-  self:addCode(jmp)
-  self:addCode(0)
-  label[#label + 1] = #self.code
-end
-
-function Compiler:fixlabel2target (label, target)
-  for _, jmp in ipairs(label) do
-    self.code[jmp] = target - jmp
-  end
-end
-
-function Compiler:fixlabel2here (label)
-  self:fixlabel2target(label, #self.code)
+function Compiler:addJmp (label)
+  self:emit("br label %%%s\n", label)
 end
 
 
-function Compiler:codeJmpFalse (ast, label)
+function Compiler:codeJmp (ast, labelT, labelF)
   local tag = ast.tag
   if tag == "not" then
-    self:codeJmpTrue(ast.e, label)
+    self:codeJmp(ast.e, labelF, labelT)
   elseif tag == "conj" then
-    self:codeJmpFalse(ast.e1, label)
-    self:codeJmpFalse(ast.e2, label)
+    local label2 = self:newlabel()
+    self:codeJmp(ast.e1, label2, labelF)
+    self:codeLabel(label2)
+    self:codeJmp(ast.e2, labelT, labelF)
   elseif tag == "disj" then
-    local labelEnd = newlabel()
-    self:codeJmpTrue(ast.e1, labelEnd)
-    self:codeJmpFalse(ast.e2, label)
-    self:fixlabel2here(labelEnd)
+    local label2 = self:newlabel()
+    self:codeJmp(ast.e1, labelT, label2)
+    self:codeLabel(label2)
+    self:codeJmp(ast.e2, labelT, labelF)
   else
     self:codeIntExp(ast)
-    self:addJmp("IfZJmp", label)
-  end
-end
-
-
-function Compiler:codeJmpTrue (ast, label)
-  local tag = ast.tag
-  if tag == "not" then
-    self:codeJmpFalse(ast.e, label)
-  elseif tag == "disj" then
-    self:codeJmpTrue(ast.e1, label)
-    self:codeJmpTrue(ast.e2, label)
-  elseif tag == "conj" then
-    local labelEnd = newlabel()
-    self:codeJmpFalse(ast.e1, labelEnd)
-    self:codeJmpTrue(ast.e2, label)
-    self:fixlabel2here(labelEnd)
-  else
-    self:codeIntExp(ast)
-    self:addJmp("IfNZJmp", label)
+    self:emit([[
+%r1 = icmp eq i32 %s, 0
+  br i1 %r1, label %%%s, label %%%s
+  ]], ast.res, labelF, labelT)
   end
 end
 
@@ -434,7 +408,6 @@ function Compiler:codeStat (ast)
     end
     self:addCode("ret", #self.params)
     self:emit("ret %s %s\n", type2VM(ast.e.ty), ast.e.res)
-    self:codelabel()
   elseif tag == "call" then
     self:codeCall(ast)
     self:addCode("pop", 1)
@@ -451,26 +424,32 @@ function Compiler:codeStat (ast)
     end
     self.locals[#self.locals + 1] = ast
   elseif tag == "while" then
-    local target = #self.code
-    local L1 = newlabel()
-    self:codeJmpFalse(ast.cond, L1)
+    local Linit = self:newlabel()
+    self:addJmp(Linit)
+    self:codeLabel(Linit)
+    local Lblock = self:newlabel()
+    local Lend = self:newlabel()
+    self:codeJmp(ast.cond, Lblock, Lend)
+    self:codeLabel(Lblock)
     self:codeStat(ast.block)
-    local L2 = newlabel()
-    self:addJmp("jmp", L2)
-    self:fixlabel2here(L1)
-    self:fixlabel2target(L2, target)
+    self:addJmp(Linit)
+    self:codeLabel(Lend)
   elseif tag == "if" then
-    local L1 = newlabel()
-    self:codeJmpFalse(ast.cond, L1)
+    local Lthen = self:newlabel()
+    local Lelse = self:newlabel()
+    self:codeJmp(ast.cond, Lthen, Lelse)
+    self:codeLabel(Lthen)
     self:codeStat(ast.th)
     if not ast.el then
-      self:fixlabel2here(L1)
+      self:addJmp(Lelse)
+      self:codeLabel(Lelse)
     else
-      local L2 = newlabel()
-      self:addJmp("jmp", L2)
-      self:fixlabel2here(L1)
+      local Lfinal = self:newlabel()
+      self:addJmp(Lfinal)
+      self:codeLabel(Lelse)
       self:codeStat(ast.el)
-      self:fixlabel2here(L2)
+      self:addJmp(Lfinal)
+      self:codeLabel(Lfinal)
     end
   elseif tag == "assg" then
     local tyrhs = self:codeExp(ast.exp)
@@ -506,28 +485,25 @@ local ops = {["+"] = "add", ["-"] = "sub",
              ["*"] = "mul", ["/"] = "div", ["%"] = "mod"
 }
 
-function Compiler:codeJunc (ast, junc)
-  if junc ~= "eq" and junc ~="ne" then
-    throw("invalid llc junc comparison")
-  end
+function Compiler:codeShortCircuit (ast, comp)
   self:codeIntExp(ast.e1)
   local label1 = self.currentlabel
   local labelelse = self:newlabel()
   local labelfinal = self:newlabel()
   self:emit([[
-    %r1 = icmp %s i32 %s, 0
-    br i1 %r1, label %%%s, label %%%s
-  ]], junc, ast.e1.res, labelelse, labelfinal)
-  self:codelabel(labelelse)
+%r1 = icmp %s i32 %s, 0
+br i1 %r1, label %%%s, label %%%s
+]], comp, ast.e1.res, labelelse, labelfinal)
+  self:codeLabel(labelelse)
   self:codeIntExp(ast.e2)
   local label2 = self.currentlabel
   self:emit("br label %%%s\n", labelfinal)
-  self:codelabel(labelfinal)
+  self:codeLabel(labelfinal)
   ast.res = self:emit([[
-      %r1 = phi i32 [ %s, %%%s ], [ %s, %%%s ]
-    ]], ast.e1.res, label1, ast.e2.res, label2)
-  return intTy
+%r1 = phi i32 [ %s, %%%s ], [ %s, %%%s ]
+  ]], ast.e1.res, label1, ast.e2.res, label2)
 end
+
 
 function Compiler:codeExp (ast)
   local tag = ast.tag
@@ -596,9 +572,11 @@ function Compiler:codeExp (ast)
     ast.res = self:emit("%r1 = %s i32 %s, %s\n",
                   ops[ast.op], ast.e1.res, ast.e2.res)
   elseif tag == "conj" then
-    ty = self:codeJunc(ast, "ne")
+    self:codeShortCircuit(ast, "ne")
+    ty = intTy
   elseif tag == "disj" then
-    ty = self:codeJunc(ast, "eq")
+    self:codeShortCircuit(ast, "eq")
+    ty = intTy
   elseif tag == "call" then
     ty = self:codeCall(ast)
   else error("unknown tag " .. tag)
@@ -625,7 +603,7 @@ function Compiler:codeFunc (ast)
   self:emit("define %s @%s (%s) {",
             type2VM(ast.retty), ast.name, params)
   self.funcs[ast.name] = { code = self.code, params = ast.params, retty = ast.retty }
-  self:codelabel()
+  self:codeLabel()
   for i = 1, #self.params do
     local param = self.params[i]
     local addr = count2reg(self:newcount())
