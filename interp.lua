@@ -278,7 +278,7 @@ function Compiler:codeJmp (ast, labelT, labelF)
 end
 
 
-function Compiler:searchLocal (name)
+function Compiler:searchVar (name)
   for i = #self.locals, 1, -1 do
     if self.locals[i].name == name then
       return self.locals[i]
@@ -287,6 +287,11 @@ function Compiler:searchLocal (name)
   for i = 1, #self.params do
     if self.params[i].name == name then
       return self.params[i]
+    end
+  end
+  for i = 1, #self.vars do
+    if self.vars[i].name == name then
+      return self.vars[i]
     end
   end
   return nil
@@ -329,12 +334,10 @@ end
 function Compiler:codeLhs (ast)
   local tag = ast.tag
   if tag == "var" then
-    local loc = self:searchLocal(ast.id)
-    if not loc then
-      throw("global not yet implemented")
-    else
-      ast.res = loc.idx
-      return loc.ty
+    local found = self:searchVar(ast.id)
+    if found then
+      ast.res = found.idx
+      return found.ty
     end
   elseif tag == "indexed" then
     local tyarr = self:codeExp(ast.array)
@@ -500,14 +503,10 @@ function Compiler:codeExp (ast)
     ast.res = string.format("%d", ast.val)
     ty = intTy
   elseif tag == "var" then
-    local loc = self:searchLocal(ast.id)
-    if loc then
-      ty = loc.ty
-      ast.res = self:emit("%r1 = load %s, %s* %s\n",
-                type2VM(ty), type2VM(ty), loc.idx)
-    else
-      self:addCode("loadG", self:name2idx(ast.id))
-    end
+    local found = self:searchVar(ast.id)
+    ty = found.ty
+    ast.res = self:emit("%r1 = load %s, %s* %s\n",
+              type2VM(found.ty), type2VM(found.ty), found.idx)
   elseif tag == "indexed" then
     local aty = self:codeExp(ast.array)
     if aty.tag ~= "array" then
@@ -574,6 +573,11 @@ function Compiler:codeExp (ast)
   return ty
 end
 
+function Compiler:codeGlobal (ast)
+  ast.idx = "@" .. ast.name
+  self:emit("%s = dso_local global i32 0\n\n", ast.idx)
+  self.vars[#self.vars + 1] = ast
+end
 
 function Compiler:codeFunc (ast)
   self.code = {}
@@ -615,7 +619,11 @@ declare i32 @printf(i8*, ...)
 
 ]]
   for i = 1, #ast do
-    Compiler:codeFunc(ast[i])
+    if ast[i].tag == "global" then
+      Compiler:codeGlobal(ast[i])
+    else
+      Compiler:codeFunc(ast[i])
+    end
   end
   local main = Compiler.funcs["main"]
   if not main then
