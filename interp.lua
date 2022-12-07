@@ -43,9 +43,6 @@ local function binOpL (term, op)
   return opL(term, op, "binop")
 end
 
-local function binCmp (term, op)
-  return opL(term, op, "cmpop")
-end
 
 local alpha = lpeg.R("az", "AZ", "__")
 local digit = lpeg.R("09")
@@ -112,13 +109,14 @@ local grammar = lpeg.P{"prog",
 
   prog = space * lpeg.Ct((funcDec + globalDec)^1) * -1,
 
-  globalDec = Rw"global" * ID * ty / node("global", "name", "ty"),
+  globalDec = Rw"global" * ID * T":" * ty * T";"
+                 / node("global", "name", "ty"),
 
   ty = Rw"int" * lpeg.Cc("int") / node("basictype", "ty")
      + Rw"array" * ty / node("array", "elem"),
 
-  funcDec = Rw"func" * ID * T"(" * params * T")" * retty * block /
-              node("func", "name", "params", "retty", "body"),
+  funcDec = Rw"func" * ID * T"(" * params * T")" * retty * (block + T";") /
+                 node("func", "name", "params", "retty", "body"),
 
   retty = T":" * ty + lpeg.Cc(intTy),
 
@@ -164,7 +162,7 @@ local grammar = lpeg.P{"prog",
 
   sum = binOpL(product, opA),
 
-  comparison = binCmp(sum, opC),
+  comparison = binOpL(sum, opC),
 
   conjunction = opL(comparison, Op"&&", "conj"),
 
@@ -189,13 +187,6 @@ end
 -----------------------------------------------------------
 local Compiler = { funcs = {}, vars = {}, nvars = 0 }
 
-local ops = {["+"] = "add", ["-"] = "sub",
-             ["*"] = "mul", ["/"] = "div", ["%"] = "mod"
-}
-
-local cmpOps = {[">"] = "sgt", [">="] = "sge",
-                ["<"] = "slt", ["<="] = "sle",
-                ["=="] = "eq", ["~="] = "ne"}
 
 function Compiler:newcount ()
   local count = self.count
@@ -236,14 +227,6 @@ function Compiler:name2idx (name)
   return idx
 end
 
-function Compiler:addCode (...)
-  local params = {...}
-  local code = self.code
-  for i = 1, #params do
-    code[#code + 1] = params[i]
-  end
-end
-
 
 function Compiler:preprocess (fmt)
   local lastdefined
@@ -267,8 +250,7 @@ end
 
 
 function Compiler:addJmp (label)
-  self:emit([[  br label %%%s
-]], label)
+  self:emit("br label %%%s\n", label)
 end
 
 
@@ -286,17 +268,12 @@ function Compiler:codeJmp (ast, labelT, labelF)
     self:codeJmp(ast.e1, labelT, label2)
     self:codeLabel(label2)
     self:codeJmp(ast.e2, labelT, labelF)
-  elseif tag == "cmpop" then
-    self:codeIntExp(ast.e1)
-    self:codeIntExp(ast.e2)
-    self:emit([[  %r1 = icmp %s i32 %s, %s
-  br i1 %r1, label %%%s, label %%%s
-]], cmpOps[ast.op], ast.e1.res, ast.e2.res, labelT, labelF)
   else
     self:codeIntExp(ast)
-    self:emit([[  %r1 = icmp eq i32 %s, 0
+    self:emit([[
+%r1 = icmp eq i32 %s, 0
   br i1 %r1, label %%%s, label %%%s
-]], ast.res, labelF, labelT)
+  ]], ast.res, labelF, labelT)
   end
 end
 
@@ -345,7 +322,7 @@ function Compiler:codeAddr (array, index)
     local tyresVM = type2VM(array.ty.elem)
     return self:emit([[
 %r1 = getelementptr %s, %s* %s, i32 %s
-]], tyresVM, tyresVM, array.res, index.res)
+    ]], tyresVM, tyresVM, array.res, index.res)
 end
 
 
@@ -390,7 +367,8 @@ function Compiler:codeCall (ast)
     end
   end
 
-  self:emit([[  %s = call %s @%s(]], res, type2VM(func.retty), ast.name)
+  self:emit("%s = call %s @%s(",
+             res, type2VM(func.retty), ast.name)
 
   for i = 1, #ast.args do
     local arg = ast.args[i]
@@ -421,24 +399,19 @@ function Compiler:codeStat (ast)
     if not typeEq(retty, self.retty) then
       throw("invalid return type")
     end
-    self:addCode("ret", #self.params)
-    self:emit([[  ret %s %s
-]], type2VM(ast.e.ty), ast.e.res)
+    self:emit("ret %s %s\n", type2VM(ast.e.ty), ast.e.res)
   elseif tag == "call" then
     self:codeCall(ast)
-    self:addCode("pop", 1)
   elseif tag == "local" then
     local ety = ast.ty
     local lety = type2VM(ety)
-    ast.idx = self:emit([[  %r1 = alloca %s
-]], lety)
+    ast.idx = self:emit("%r1 = alloca %s\n", lety)
     if ast.e then
       self:codeExp(ast.e)
       if not typeEq(ety, ast.ty) then
         throw("incompatible types")
       end
-      self:emit([[  store %s %s, %s* %s
-]], lety, ast.e.res, lety, ast.idx)
+      self:emit("store %s %s, %s* %s\n", lety, ast.e.res, lety, ast.idx)
     end
     self.locals[#self.locals + 1] = ast
   elseif tag == "while" then
@@ -475,18 +448,15 @@ function Compiler:codeStat (ast)
     if not typeEq(tyrhs, tylhs) then
       throw("invalid assignment")
     end
-    self:emit([[  store %s %s, %s* %s
-]], type2VM(tylhs), ast.exp.res, type2VM(tylhs), ast.lhs.res)
+    self:emit("store %s %s, %s* %s\n",
+                type2VM(tylhs), ast.exp.res, type2VM(tylhs), ast.lhs.res)
   elseif tag == "block" then
     local nvars = #self.locals
     for i = 1, #ast.body do
       self:codeStat(ast.body[i])
     end
     local diff = #self.locals - nvars
-    if diff > 0 then
-      self:addCode("pop", diff)
-      for i = 1, diff do table.remove(self.locals) end
-    end
+    for i = 1, diff do table.remove(self.locals) end
   else error("unknown tag " .. tag)
   end
 end
@@ -499,23 +469,27 @@ function Compiler:codeIntExp (ast)
   end
 end
 
+local ops = {["+"] = "add", ["-"] = "sub",
+             ["*"] = "mul", ["/"] = "sdiv", ["%"] = "srem"
+}
 
 function Compiler:codeShortCircuit (ast, comp)
   self:codeIntExp(ast.e1)
   local label1 = self.currentlabel
   local labelelse = self:newlabel()
   local labelfinal = self:newlabel()
-  self:emit([[  %r1 = icmp %s i32 %s, 0
-  br i1 %r1, label %%%s, label %%%s
+  self:emit([[
+%r1 = icmp %s i32 %s, 0
+br i1 %r1, label %%%s, label %%%s
 ]], comp, ast.e1.res, labelelse, labelfinal)
   self:codeLabel(labelelse)
   self:codeIntExp(ast.e2)
   local label2 = self.currentlabel
-  self:emit([[  br label %%%s
-]], labelfinal)
+  self:emit("br label %%%s\n", labelfinal)
   self:codeLabel(labelfinal)
-  ast.res = self:emit([[  %r1 = phi i32 [ %s, %%%s ], [ %s, %%%s ]
-]], ast.e1.res, label1, ast.e2.res, label2)
+  ast.res = self:emit([[
+%r1 = phi i32 [ %s, %%%s ], [ %s, %%%s ]
+  ]], ast.e1.res, label1, ast.e2.res, label2)
 end
 
 
@@ -529,8 +503,8 @@ function Compiler:codeExp (ast)
     local loc = self:searchLocal(ast.id)
     if loc then
       ty = loc.ty
-      ast.res = self:emit([[  %r1 = load %s, %s* %s
-]], type2VM(ty), type2VM(ty), loc.idx)
+      ast.res = self:emit("%r1 = load %s, %s* %s\n",
+                type2VM(ty), type2VM(ty), loc.idx)
     else
       self:addCode("loadG", self:name2idx(ast.id))
     end
@@ -542,55 +516,49 @@ function Compiler:codeExp (ast)
     self:codeIntExp(ast.index)
     local regaddr = self:codeAddr(ast.array, ast.index)
     local tyresVM = type2VM(aty.elem)
-    ast.res = self:emit([[  %r1 = load %s, %s* %s
-]], tyresVM, tyresVM, regaddr)
+    ast.res = self:emit([[
+%r1 = load %s, %s* %s
+    ]], tyresVM, tyresVM, regaddr)
     ty = aty.elem
   elseif tag == "newarray" then
     local resizep = self:newreg()
     local resizeI = self:newreg()
     local tyelem = type2VM(ast.ty)
-    self:emit([[  %r1 = getelementptr %s, %s* null, i32 1
-  %r2 = ptrtoint %s* %s to i64
+    self:emit([[
+%r1 = getelementptr %s, %s* null, i32 1
+%r2 = ptrtoint %s* %s to i64
 ]], resizep, type2VM(ast.ty), tyelem, resizeI, tyelem, resizep)
     local rsize64 = self:newreg()
     local rsizeB = self:newreg()
     local pi8 = self:newreg()
     local pT = self:newreg()
     self:codeIntExp(ast.size)
-    self:emit([[  %s = sext i32 %s to i64
-  %s = mul i64 %s, %s
-  %s = call i8* @malloc(i64 %s)
-  %s = bitcast i8* %s to %s*
+    self:emit([[
+%s = sext i32 %s to i64
+%s = mul i64 %s, %s
+%s = call i8* @malloc(i64 %s)
+%s = bitcast i8* %s to %s*
 ]], rsize64, ast.size.res, rsizeB, rsize64,
     resizeI, pi8, rsizeB, pT, pi8, tyelem)
     ast.res = pT
     ty = {tag = "array", elem = ast.ty}
   elseif tag == "not" then
     self:codeIntExp(ast.e)
-    ast.res = self:emit([[  %r1 = icmp eq i32 %s, 0
-  %r2 = zext i1 %r1 to i32
-]], ast.e.res)
+    ast.res = self:emit("%r1 = icmp eq i32 %s, 0\n%r2 = zext i1 %r1 to i32\n",
+      ast.e.res)
     ty = intTy
   elseif tag == "neg" then
     local reg = self:newreg()
     ast.res = reg
     self:codeIntExp(ast.e)
-    self:emit([[  %s = sub i32 0, %s
-]], reg, ast.e.res)
+    self:emit("%s = sub i32 0, %s\n", reg, ast.e.res)
     ty = intTy
   elseif tag == "binop" then
     self:codeIntExp(ast.e1)
     self:codeIntExp(ast.e2)
     ty = intTy
-    ast.res = self:emit([[  %r1 = %s i32 %s, %s
-]], ops[ast.op], ast.e1.res, ast.e2.res)
-  elseif tag == "cmpop" then
-    self:codeIntExp(ast.e1)
-    self:codeIntExp(ast.e2)
-    ast.res = self:emit([[  %r1 = icmp %s i32 %s, %s
-  %r2 = zext i1 %r1 to i32
-]], cmpOps[ast.op], ast.e1.res, ast.e2.res)
-    ty = intTy
+    ast.res = self:emit("%r1 = %s i32 %s, %s\n",
+                  ops[ast.op], ast.e1.res, ast.e2.res)
   elseif tag == "conj" then
     self:codeShortCircuit(ast, "ne")
     ty = intTy
@@ -628,15 +596,12 @@ function Compiler:codeFunc (ast)
     local param = self.params[i]
     local addr = count2reg(self:newcount())
     local pty = type2VM(param.ty)
-    self:emit([[  %s = alloca %s
-]], addr, pty)
-    self:emit([[  store %s %s, %s* %s
-]], pty, param.idx, pty, addr)
+    self:emit("%s = alloca %s\n", addr, pty)
+    self:emit("store %s %s, %s* %s\n", pty, param.idx, pty, addr)
     param.idx = addr
   end
   self:codeStat(ast.body)
-  self:emit([[  ret i32 0
-]])
+  self:emit("ret i32 0\n")
   self:emit("}\n\n")
 end
 
