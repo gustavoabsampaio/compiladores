@@ -289,12 +289,10 @@ function Compiler:searchVar (name)
       return self.params[i]
     end
   end
-  for i = 1, #self.vars do
-    if self.vars[i].name == name then
-      return self.vars[i]
-    end
+  if self.vars[name] then
+    return self.vars[name]
   end
-  return nil
+  throw ("Undefined variable " .. name)
 end
 
 
@@ -573,13 +571,24 @@ function Compiler:codeExp (ast)
   return ty
 end
 
+function Compiler:global_AlreadyDefinedException(ast)
+  if self.vars[ast.name] then
+    throw("Global named " .. ast.name .. " already defined")
+  end
+  if self.funcs[ast.name] then
+    throw("Function named " .. ast.name .. " already defined")
+  end
+end
+
 function Compiler:codeGlobal (ast)
+  self:global_AlreadyDefinedException(ast)
   ast.idx = "@" .. ast.name
+  self.vars[ast.name] = ast
   self:emit("%s = dso_local global i32 0\n\n", ast.idx)
-  self.vars[#self.vars + 1] = ast
 end
 
 function Compiler:codeFunc (ast)
+  self:global_AlreadyDefinedException(ast)
   self.code = {}
   self.locals = {}
   self.params = ast.params

@@ -1,11 +1,8 @@
 global glob : int;
 func foo(param : int):int{
-    local loc : int = 5;
-    glob = 10;
-    glob = glob + 1;
-    loc = loc + 2;
-    param = param + 3;
-    return glob + loc + param;
+    glob = param;
+    local glob : int = 10;
+    return glob;
 }
 
 func main () {
