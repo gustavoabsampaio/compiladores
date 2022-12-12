@@ -571,24 +571,39 @@ function Compiler:codeExp (ast)
   return ty
 end
 
-function Compiler:global_AlreadyDefinedException(ast)
+function Compiler:globalAlreadyDefinedException(ast)
   if self.vars[ast.name] then
     throw("Global named " .. ast.name .. " already defined")
   end
+end
+
+function Compiler:functionAlreadyDefinedException(ast)
+  -- print("FUNCTION ALREADY DEFINED IN")
+  -- print("sef.funcs[ast.name].body")
+  -- print(pt.pt(self.funcs[ast.name]))
+  if self.funcs[ast.name] and self.funcs[ast.name].body then
+      throw("Function named " .. ast.name .. " already declared")
+  end
+  -- print("FUNCTION ALREADY DEFINED OUT")
+end
+
+function Compiler:functionAlreadyDeclaredException(ast)
   if self.funcs[ast.name] then
-    throw("Function named " .. ast.name .. " already defined")
+    throw("Function named " .. ast.name .. " already declared")
   end
 end
 
 function Compiler:codeGlobal (ast)
-  self:global_AlreadyDefinedException(ast)
+  self:globalAlreadyDefinedException(ast)
+  self:functionAlreadyDeclaredException(ast)
   ast.idx = "@" .. ast.name
   self.vars[ast.name] = ast
   self:emit("%s = dso_local global i32 0\n\n", ast.idx)
 end
 
 function Compiler:codeFunc (ast)
-  self:global_AlreadyDefinedException(ast)
+  self:globalAlreadyDefinedException(ast)
+  self:functionAlreadyDefinedException(ast)
   self.code = {}
   self.locals = {}
   self.params = ast.params
@@ -618,6 +633,12 @@ function Compiler:codeFunc (ast)
   self:emit("}\n\n")
 end
 
+function Compiler:codeFwdDec(ast)
+  self:globalAlreadyDefinedException(ast)
+  self:functionAlreadyDeclaredException(ast)
+  self.funcs[ast.name] = { params = ast.params, retty = ast.retty }
+end
+
 function compile (ast)
   Compiler:emit[[
 declare i8* @malloc(i64)
@@ -630,8 +651,10 @@ declare i32 @printf(i8*, ...)
   for i = 1, #ast do
     if ast[i].tag == "global" then
       Compiler:codeGlobal(ast[i])
-    else
+    elseif ast[i].body then
       Compiler:codeFunc(ast[i])
+    else
+      Compiler:codeFwdDec(ast[i])
     end
   end
   local main = Compiler.funcs["main"]

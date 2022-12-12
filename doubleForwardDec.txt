@@ -1,0 +1,15 @@
+func foo(param : int):int;
+
+func foo(param : int):int;
+
+func too(param:int):int {
+    return param + foo(5);
+}
+
+func foo(param : int):int{
+    return param + 15;
+}
+
+func main () {
+    return too(10);
+}
